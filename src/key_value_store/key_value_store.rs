@@ -118,43 +118,28 @@ impl KeyValueStore {
     }
 
     pub fn read_from_file(&mut self, src_file: &str) -> Result<(), RWError> {
-        let mut file;
-        match File::open(src_file) {
-            Ok(f) => {
-                file = f;
+        let buf = match std::fs::read(src_file) {
+            Ok(b) => {
+                if b.is_empty() {
+                    return Err(RWError {
+                        kind_: ErrorKind::FileReadError,
+                        context_: String::from("Empty file!"),
+                    });
+                }
+                b
             }
             Err(e) => {
                 return Err(RWError {
                     kind_: ErrorKind::FileOpenError,
                     context_: e.to_string(),
-                })
+                });
             }
         };
-        let mut buf = vec![0; 1024];
-        // n_bytes will override the default 1024 byte buffer size to allow us to
-        // properly read the protobuf file.
-        let n_bytes: usize;
-        match file.read(&mut buf) {
-            Ok(n_b) => {
-                if n_b == 0 {
-                    return Err(RWError { kind_: {ErrorKind::FileReadError},
-                        context_: String::from("Empty file!") })
-                } else {
-                    n_bytes = n_b;
-                }
-            }
-            Err(e) => {
-                return Err(RWError {
-                    kind_: ErrorKind::FileReadError,
-                    context_: e.to_string(),
-                })
-            }
-        };
-        match KeyValueStoreMsg::decode(&buf[..n_bytes]) {
+        match KeyValueStoreMsg::decode(buf.as_slice()) {
             Ok(msg) => {
                 self.data_ = msg;
                 Ok(())
-            },
+            }
             Err(e) => Err(RWError {
                 kind_: ErrorKind::DataDecodeError,
                 context_: e.to_string(),
