@@ -99,6 +99,9 @@ async fn main() -> Result<(), SocketError> {
         io::stdin().read_line(&mut input)
             .expect("Failed to read line");
         let ip = input.trim();
+        if ip.is_empty() {
+            continue;
+        }
         let control_char = ip.chars().nth(0).unwrap();
         let mut skip_input = false;
         match control_char {
@@ -114,14 +117,14 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => { 
                         eprintln!("Expected key!");
-                        break;
+                        continue;
                     },
                     Some(x) => { key = x; }
                 }
                 match split.next() {
                     None => {
                         eprintln!("Expected value!");
-                        break;
+                        continue;
                     },
                     Some(x) => { val = x; }
                 }
@@ -134,7 +137,7 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => {
                         eprintln!("Expected backup ID!");
-                        break;
+                        continue;
                     }
                     Some(x) => {backup_id = x; }
                 }
@@ -147,7 +150,7 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => {
                         eprintln!("Expected message to ping!");
-                        break;
+                        continue;
                     },
                     Some(x) => { ping_msg = x; }
                 }
@@ -160,7 +163,7 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => {
                         eprintln!("Expected backup ID!");
-                        break;
+                        continue;
                     }
                     Some(x) => {backup_id = x; }
                 }
@@ -173,7 +176,7 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => {
                         eprintln!("Expected key to read!");
-                        break;
+                        continue;
                     }
                     Some(x) => {read_key = x; }
                 }
@@ -187,14 +190,14 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => { 
                         eprintln!("Expected key!");
-                        break;
+                        continue;
                     },
                     Some(x) => { key = x; }
                 }
                 match split.next() {
                     None => {
                         eprintln!("Expected value!");
-                        break;
+                        continue;
                     },
                     Some(x) => { val = x; }
                 }
@@ -207,7 +210,7 @@ async fn main() -> Result<(), SocketError> {
                 match split.next() {
                     None => {
                         eprintln!("Expected key to delete!");
-                        break;
+                        continue;
                     },
                     Some(x) => { key = x; }
                 }
