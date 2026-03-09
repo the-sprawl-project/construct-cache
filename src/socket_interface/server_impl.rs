@@ -65,12 +65,12 @@ impl ConstructCacheServer {
         return success;
     }
 
-    fn get_value(&self, key: &str) -> Option<String> {
+    fn get_value(&self, key: &str) -> Option<(String, i64)> {
         let store = self.kvs_access_.read().unwrap();
         let val = (*store).get(key);
         match val {
             None => None,
-            Some(kvp) => Some(kvp.value().to_string())
+            Some(kvp) => Some((kvp.value().to_string(), kvp.timestamp()))
         }
     }
 
@@ -154,11 +154,12 @@ impl ConstructCacheServer {
                     success: false,
                     pair: None
                 }.encode_to_vec(),
-            Some(x) => ReadKvPairResp {
+            Some((v, ts)) => ReadKvPairResp {
                     success: true,
                     pair: Some(KeyValuePair {
                         key: key,
-                        value: x
+                        value: v,
+                        timestamp: ts,
                     })
                 }.encode_to_vec()
         }
@@ -297,10 +298,6 @@ impl ConstructCacheServer {
                         },
                         ReqType::Restore => {
                             resp = self_arc.handle_restore_request(&payload);
-                        }
-                        _ => {
-                            warn!("Unrecognized request type from {:?}", addr);
-                            continue;
                         }
                     }
                     let mut generic_resp = GenericResponse::default();

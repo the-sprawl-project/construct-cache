@@ -4,6 +4,7 @@ package socket_messages;
 message KeyValuePair {
   string key = 1;
   string value = 2;
+  int64 timestamp = 3;
 }
 
 enum ReqType {
