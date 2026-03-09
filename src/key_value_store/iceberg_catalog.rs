@@ -32,8 +32,9 @@ fn cdc_schema() -> Arc<Schema> {
 ///
 /// Implementations manage *where* and *how* Iceberg-compatible Parquet
 /// data files are stored and retrieved.  The trait is intentionally small
-/// so that a filesystem implementation can be swapped for a REST-backed
-/// implementation (e.g. backed by `iceberg-catalog-rest`) later.
+/// and implementation-agnostic so that the underlying storage backend
+/// can be freely swapped (e.g. local filesystem, remote service, cloud
+/// object store, or any custom backend) without changing consumer code.
 pub trait IcebergCatalog: Send + Sync {
     /// Write a CDC checkpoint of the given `KeyValueStore` to the catalog.
     ///
