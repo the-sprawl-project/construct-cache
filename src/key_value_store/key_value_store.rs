@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use crate::key_value_store::key_value_pair::KeyValuePair;
 use super::filestore::write_to_file;
-use crate::proto::KeyValueStoreMsg;
+use crate::proto::{KeyValueStoreMsg, ValueWithTimestamp};
 
 use prost::Message;
 use std::fs::File;
@@ -36,7 +36,7 @@ impl KeyValueStore {
         match self.data_.values.get(key) {
             Some(x) => {
                 returnable = Some(
-                    KeyValuePair::new(key, x));
+                    KeyValuePair::new(key, x.value.as_str(), x.timestamp));
             },
             None => {
                 returnable = None;
@@ -49,7 +49,10 @@ impl KeyValueStore {
         if let Entry::Vacant(
             v) = self.data_.values.entry(
             pair.key().to_string()) {
-            v.insert(pair.value().to_string());
+            v.insert(ValueWithTimestamp {
+                value: pair.value().to_string(),
+                timestamp: pair.timestamp(),
+            });
             return true;
         }
         return false;
@@ -61,7 +64,10 @@ impl KeyValueStore {
         }
         self.data_.values.insert(
             pair.key().to_string(),
-            pair.value().to_string()
+            ValueWithTimestamp {
+                value: pair.value().to_string(),
+                timestamp: pair.timestamp(),
+            }
         );
         return true;
     }
@@ -79,7 +85,11 @@ impl KeyValueStore {
 
     pub fn all(&self) -> HashMap<String, String> {
         // This is _such_ a waste of space.
-        return self.data_.values.clone();
+        let mut map = HashMap::new();
+        for (k, v) in &self.data_.values {
+            map.insert(k.clone(), v.value.clone());
+        }
+        return map;
     }
 
     pub fn data(&self) -> KeyValueStoreMsg {
@@ -158,7 +168,7 @@ mod tests {
         let mut store = KeyValueStore::new(store_name);
         let first_key = "one";
         let first_pair = KeyValuePair::new(
-            first_key, "uno");
+            first_key, "uno", 100);
         store.add(first_pair);
 
         // test read idempotency
@@ -178,11 +188,11 @@ mod tests {
         // test add - ensure that adding duplicates returns false
         {
             let duplicate_add = store.add(KeyValuePair::new(
-                first_key, "uno again"
+                first_key, "uno again", 100
             ));
             assert_eq!(duplicate_add, false);
             let acceptable_add = store.add(KeyValuePair::new(
-                "two", "dos"
+                "two", "dos", 200
             ));
             assert_eq!(acceptable_add, true);
         }
@@ -191,7 +201,7 @@ mod tests {
         {
             // with a key that exists
             store.update(KeyValuePair::new(
-                first_key, "one_again" 
+                first_key, "one_again", 300
             ));
             let new_val = store.get(first_key).expect(
                 "Expected value in store!");
@@ -199,7 +209,7 @@ mod tests {
 
             // with a key that does not exist
             store.update(KeyValuePair::new(
-                "another_key", "another_value"
+                "another_key", "another_value", 400
             ));
             let new_val_2 = store.get("another_key");
             assert_eq!(new_val_2, None, "Unexpected entry!");

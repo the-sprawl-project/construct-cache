@@ -271,12 +271,6 @@ pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
                 Err(e) => return Err(e)
             }
         }
-        _ => {
-            return Err(SocketError {
-                kind_: ErrorKind::ParseError,
-                context_: String::from("Unexpected request type")
-            });
-        }
     }
     Ok(returnable)
 }
@@ -285,6 +279,7 @@ pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
 pub fn kvp_proto_to_kvp_rust(inp: KeyValuePair) -> key_value_pair::KeyValuePair {
     key_value_pair::KeyValuePair::new(
         &inp.key,
-        &inp.value
+        &inp.value,
+        inp.timestamp
     )
 }
