@@ -44,7 +44,7 @@ fn print_basic_help() {
     println!("c <key> <value>: Creates simple key value pair");
     println!("d <key>: Deletes key value pair");
     println!("g <key>: Gets the value of a key from the key value store");
-    println!("b <backup_id>: Backs up the key value store with the specific ID");
+    println!("b: Backs up the key value store (creates a checkpoint)");
     println!("r <backup_id>: Restores the key values store from a specified backup ID");
     println!("p <message>: Pings the key value store with a message");
     println!("u <key> <value>: Updates the key value store with new value");
@@ -133,16 +133,7 @@ async fn main() -> Result<(), SocketError> {
                 client.send_create(key, val).await?;
             }
             'b' => {
-                let mut split = ip.split(' ');
-                split.next();
-                let backup_id = match split.next() {
-                    None => {
-                        eprintln!("Expected backup ID!");
-                        continue;
-                    }
-                    Some(x) => x,
-                };
-                client.send_backup(backup_id).await?;
+                client.send_backup().await?;
             }
             'p' => {
                 let mut split = ip.split(' ');
