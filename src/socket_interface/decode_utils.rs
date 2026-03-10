@@ -65,16 +65,6 @@ pub fn parse_delete_request(request: &[u8]) -> Result<DeleteKvPairReq, SocketErr
     }
 }
 
-pub fn parse_backup_request(request: &[u8]) -> Result<BackupReq, SocketError> {
-    match BackupReq::decode(request) {
-        Ok(res) => Ok(res),
-        Err(e) => Err(SocketError {
-            kind_: ErrorKind::ParseError,
-            context_: e.to_string(),
-        }),
-    }
-}
-
 pub fn parse_restore_request(request: &[u8]) -> Result<RestoreReq, SocketError> {
     match RestoreReq::decode(request) {
         Ok(res) => Ok(res),
