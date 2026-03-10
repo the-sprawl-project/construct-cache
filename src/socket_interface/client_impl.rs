@@ -111,11 +111,9 @@ impl ConstructCacheClient {
         Ok(true)
     }
 
-    pub async fn send_backup(&mut self, backup_id: &str) -> Result<bool, SocketError> {
+    pub async fn send_backup(&mut self) -> Result<bool, SocketError> {
         let mut request = GenericRequest::default();
-        let backup_req = BackupReq {
-            backup_id: backup_id.to_string(),
-        };
+        let backup_req = BackupReq {};
         request.payload = backup_req.encode_to_vec();
         request.set_req_type(ReqType::Backup);
         self.send_message(request).await?;
