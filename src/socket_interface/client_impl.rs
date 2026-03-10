@@ -103,6 +103,7 @@ impl ConstructCacheClient {
         let mut request = GenericRequest::default();
         let restore_req = RestoreReq {
             backup_id: backup_id.to_string(),
+            snapshot_id: None,
         };
         request.payload = restore_req.encode_to_vec();
         request.set_req_type(ReqType::Restore);
