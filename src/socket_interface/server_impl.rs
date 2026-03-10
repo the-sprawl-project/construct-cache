@@ -1,6 +1,8 @@
+use crate::key_value_store::iceberg_catalog::{FileSystemCatalog, IcebergCatalog};
 use crate::key_value_store::key_value_store::KeyValueStore;
 use prost::Message;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -16,6 +18,8 @@ use log::{error, info, trace, warn};
 pub struct ConstructCacheServer {
     listen_addr_: String,
     kvs_access_: RwLock<KeyValueStore>,
+    catalog_: Arc<dyn IcebergCatalog>,
+    read_only_: AtomicBool,
 }
 
 fn invalid_create_resp() -> CreateKvPairResp {
@@ -24,9 +28,13 @@ fn invalid_create_resp() -> CreateKvPairResp {
 
 impl ConstructCacheServer {
     pub fn new(listening_addr: &str, name: &str) -> Arc<ConstructCacheServer> {
+        // For now, we use a fixed warehouse path.
+        let catalog = Arc::new(FileSystemCatalog::new("warehouse").expect("Cannot create catalog"));
         Arc::new(ConstructCacheServer {
             listen_addr_: String::from_str(listening_addr).unwrap(),
             kvs_access_: RwLock::new(KeyValueStore::new(name)),
+            catalog_: catalog,
+            read_only_: AtomicBool::new(false),
         })
     }
 
@@ -48,10 +56,18 @@ impl ConstructCacheServer {
     }
 
     fn add_value(&self, pair: KeyValuePair) -> bool {
+        if self.read_only_.load(Ordering::SeqCst) {
+            warn!("Attempted write in read-only mode");
+            return false;
+        }
         let mut store = self.kvs_access_.write().unwrap();
         let success = (*store).add(kvp_proto_to_kvp_rust(pair));
         if success {
             info!("Successfully added pair!");
+            // Automatic checkpoint
+            if let Err(e) = self.catalog_.write_checkpoint(&store) {
+                error!("Failed to write checkpoint: {:?}", e);
+            }
         } else {
             info!("Did not add pair!");
         }
@@ -65,18 +81,38 @@ impl ConstructCacheServer {
     }
 
     fn update_value(&self, pair: KeyValuePair) -> bool {
+        if self.read_only_.load(Ordering::SeqCst) {
+            warn!("Attempted write in read-only mode");
+            return false;
+        }
         let mut store = self.kvs_access_.write().unwrap();
-        (*store).update(kvp_proto_to_kvp_rust(pair))
+        let success = (*store).update(kvp_proto_to_kvp_rust(pair));
+        if success {
+            if let Err(e) = self.catalog_.write_checkpoint(&store) {
+                error!("Failed to write checkpoint: {:?}", e);
+            }
+        }
+        success
     }
 
     fn delete_value(&self, key: &str) -> bool {
+        if self.read_only_.load(Ordering::SeqCst) {
+            warn!("Attempted write in read-only mode");
+            return false;
+        }
         let mut store = self.kvs_access_.write().unwrap();
-        (*store).delete(key)
+        let success = (*store).delete(key);
+        if success {
+            if let Err(e) = self.catalog_.write_checkpoint(&store) {
+                error!("Failed to write checkpoint: {:?}", e);
+            }
+        }
+        success
     }
 
-    fn backup_key_value_store(&self, backup_id: &str) -> bool {
+    fn backup_key_value_store(&self) -> bool {
         let store = self.kvs_access_.read().unwrap();
-        match store.write_to_file(backup_id) {
+        match self.catalog_.write_checkpoint(&store) {
             Ok(_) => true,
             Err(e) => {
                 error!("Inner error in backup: {:?}", e.to_string());
@@ -85,10 +121,22 @@ impl ConstructCacheServer {
         }
     }
 
-    fn restore_key_value_store(&self, backup_id: &str) -> bool {
+    fn restore_key_value_store(&self, snapshot_id: Option<u64>) -> bool {
         let mut store = self.kvs_access_.write().unwrap();
-        match store.read_from_file(backup_id) {
-            Ok(_) => true,
+        let table_name = store.name().to_string();
+        let result = if let Some(id) = snapshot_id {
+            self.catalog_.read_version(&table_name, id)
+        } else {
+            self.catalog_.read_latest(&table_name)
+        };
+
+        match result {
+            Ok(new_store) => {
+                *store = new_store;
+                // If we restore, we probably want to resume writes.
+                self.read_only_.store(false, Ordering::SeqCst);
+                true
+            }
             Err(e) => {
                 error!("Inner error in restore: {:?}", e.to_string());
                 false
@@ -186,15 +234,9 @@ impl ConstructCacheServer {
         }
     }
 
-    pub fn handle_backup_request(&self, binary_req: &[u8]) -> Vec<u8> {
-        let backup_request = match parse_backup_request(binary_req) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Parse error: {:?}", e);
-                return BackupResp { success: false }.encode_to_vec();
-            }
-        };
-        let success = self.backup_key_value_store(&backup_request.backup_id);
+    pub fn handle_backup_request(&self, _binary_req: &[u8]) -> Vec<u8> {
+        // backup_id is ignored now, as we use epoch ms in Iceberg catalog.
+        let success = self.backup_key_value_store();
         BackupResp { success }.encode_to_vec()
     }
 
@@ -206,8 +248,71 @@ impl ConstructCacheServer {
                 return RestoreResp { success: false }.encode_to_vec();
             }
         };
-        let success = self.restore_key_value_store(&restore_request.backup_id);
+        let success = self.restore_key_value_store(restore_request.snapshot_id);
         RestoreResp { success }.encode_to_vec()
+    }
+
+    pub fn handle_list_snapshots_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let req = match parse_list_snapshots_request(binary_req) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Parse error: {:?}", e);
+                return ListSnapshotsResp {
+                    success: false,
+                    snapshots: vec![],
+                }
+                .encode_to_vec();
+            }
+        };
+        match self.catalog_.list_snapshots(&req.table_name) {
+            Ok(snaps) => {
+                let snapshots = snaps
+                    .into_iter()
+                    .map(|s| SnapshotMsg {
+                        id: s.id,
+                        timestamp_ms: s.timestamp_ms,
+                        path: s.path,
+                    })
+                    .collect();
+                ListSnapshotsResp {
+                    success: true,
+                    snapshots,
+                }
+                .encode_to_vec()
+            }
+            Err(e) => {
+                error!("Failed to list snapshots: {:?}", e);
+                ListSnapshotsResp {
+                    success: false,
+                    snapshots: vec![],
+                }
+                .encode_to_vec()
+            }
+        }
+    }
+
+    pub fn handle_time_travel_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let req = match parse_time_travel_request(binary_req) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Parse error: {:?}", e);
+                return TimeTravelResp { success: false }.encode_to_vec();
+            }
+        };
+
+        let mut store = self.kvs_access_.write().unwrap();
+        let table_name = store.name().to_string();
+        match self.catalog_.read_version(&table_name, req.snapshot_id) {
+            Ok(new_store) => {
+                *store = new_store;
+                self.read_only_.store(true, Ordering::SeqCst);
+                TimeTravelResp { success: true }.encode_to_vec()
+            }
+            Err(e) => {
+                error!("Time travel failed: {:?}", e);
+                TimeTravelResp { success: false }.encode_to_vec()
+            }
+        }
     }
 
     // TODO: Given that Error is a trait, we should ideally create custom
@@ -245,6 +350,8 @@ impl ConstructCacheServer {
                         ReqType::Delete => self_arc.handle_delete_request(&payload),
                         ReqType::Backup => self_arc.handle_backup_request(&payload),
                         ReqType::Restore => self_arc.handle_restore_request(&payload),
+                        ReqType::ListSnapshots => self_arc.handle_list_snapshots_request(&payload),
+                        ReqType::TimeTravel => self_arc.handle_time_travel_request(&payload),
                     };
                     let mut generic_resp = GenericResponse::default();
                     generic_resp.set_req_type(req_type);
