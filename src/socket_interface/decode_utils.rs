@@ -85,6 +85,26 @@ pub fn parse_restore_request(request: &[u8]) -> Result<RestoreReq, SocketError> 
     }
 }
 
+pub fn parse_list_snapshots_request(request: &[u8]) -> Result<ListSnapshotsReq, SocketError> {
+    match ListSnapshotsReq::decode(request) {
+        Ok(res) => Ok(res),
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
+pub fn parse_time_travel_request(request: &[u8]) -> Result<TimeTravelReq, SocketError> {
+    match TimeTravelReq::decode(request) {
+        Ok(res) => Ok(res),
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
 fn parse_ping_response(payload: &[u8]) -> Result<String, SocketError> {
     match PingResponse::decode(payload) {
         Ok(v) => Ok(v.ping_resp_message.to_string()),
@@ -197,6 +217,42 @@ fn parse_restore_response(payload: &[u8]) -> Result<String, SocketError> {
     }
 }
 
+fn parse_list_snapshots_response(payload: &[u8]) -> Result<String, SocketError> {
+    match ListSnapshotsResp::decode(payload) {
+        Ok(v) => {
+            if v.success {
+                let mut res = String::from("Snapshots:\n");
+                for s in v.snapshots {
+                    res.push_str(&format!("ID: {}, TS: {}\n", s.id, s.timestamp_ms));
+                }
+                Ok(res)
+            } else {
+                Ok("Could not list snapshots!".to_string())
+            }
+        }
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
+fn parse_time_travel_response(payload: &[u8]) -> Result<String, SocketError> {
+    match TimeTravelResp::decode(payload) {
+        Ok(v) => {
+            if v.success {
+                Ok("Successfully traveled in time!".to_string())
+            } else {
+                Ok("Could not travel in time!".to_string())
+            }
+        }
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
 pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
     let parsed_response = match GenericResponse::decode(response) {
         Ok(res) => res,
@@ -242,6 +298,14 @@ pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
             Err(e) => return Err(e),
         },
         ReqType::Restore => match parse_restore_response(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::ListSnapshots => match parse_list_snapshots_response(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::TimeTravel => match parse_time_travel_response(&payload) {
             Ok(v) => returnable = v,
             Err(e) => return Err(e),
         },
