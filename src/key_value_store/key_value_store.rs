@@ -1,17 +1,14 @@
-use log::error;
-use std::str::FromStr;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::sync::Arc;
 use crate::key_value_store::key_value_pair::KeyValuePair;
-use super::filestore::write_to_file;
 use crate::proto::{KeyValueStoreMsg, ValueWithTimestamp};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::str::FromStr;
 
+use crate::key_value_store::errors::{ErrorKind, RWError};
+use log::trace;
 use prost::Message;
 use std::fs::File;
-use crate::key_value_store::errors::{ErrorKind, RWError};
 use std::io::prelude::*;
-use log::trace;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct KeyValueStore {
@@ -20,10 +17,11 @@ pub struct KeyValueStore {
 
 impl KeyValueStore {
     pub fn new(name: &str) -> KeyValueStore {
-        let mut data = KeyValueStoreMsg::default();
-        data.name = String::from_str(name).expect("Cannot accept name");
         KeyValueStore {
-            data_: data
+            data_: KeyValueStoreMsg {
+                name: String::from_str(name).expect("Cannot accept name"),
+                ..Default::default()
+            },
         }
     }
 
@@ -32,30 +30,25 @@ impl KeyValueStore {
     }
 
     pub fn get(&self, key: &str) -> Option<KeyValuePair> {
-        let returnable: Option<KeyValuePair>;
-        match self.data_.values.get(key) {
-            Some(x) => {
-                returnable = Some(
-                    KeyValuePair::new(key, x.value.as_str(), x.timestamp));
-            },
-            None => {
-                returnable = None;
-            }
-        }
-        return returnable;
+        self.data_
+            .values
+            .get(key)
+            .map(|x| KeyValueStore::new_kvp(key, x.value.as_str(), x.timestamp))
+    }
+
+    fn new_kvp(key: &str, value: &str, timestamp: i64) -> KeyValuePair {
+        KeyValuePair::new(key, value, timestamp)
     }
 
     pub fn add(&mut self, pair: KeyValuePair) -> bool {
-        if let Entry::Vacant(
-            v) = self.data_.values.entry(
-            pair.key().to_string()) {
+        if let Entry::Vacant(v) = self.data_.values.entry(pair.key().to_string()) {
             v.insert(ValueWithTimestamp {
                 value: pair.value().to_string(),
                 timestamp: pair.timestamp(),
             });
             return true;
         }
-        return false;
+        false
     }
 
     pub fn update(&mut self, pair: KeyValuePair) -> bool {
@@ -67,20 +60,17 @@ impl KeyValueStore {
             ValueWithTimestamp {
                 value: pair.value().to_string(),
                 timestamp: pair.timestamp(),
-            }
+            },
         );
-        return true;
+        true
     }
 
     pub fn delete(&mut self, key: &str) -> bool {
-        match self.data_.values.remove(key) {
-            Some(_) => true,
-            None => false
-        }
+        self.data_.values.remove(key).is_some()
     }
 
     pub fn name(&self) -> &str {
-        &self.data_.name.as_str()
+        self.data_.name.as_str()
     }
 
     pub fn all(&self) -> HashMap<String, String> {
@@ -89,11 +79,11 @@ impl KeyValueStore {
         for (k, v) in &self.data_.values {
             map.insert(k.clone(), v.value.clone());
         }
-        return map;
+        map
     }
 
     pub fn data(&self) -> KeyValueStoreMsg {
-        return self.data_.clone();
+        self.data_.clone()
     }
 
     pub fn write_to_file(&self, target_file: &str) -> Result<(), RWError> {
@@ -167,19 +157,16 @@ mod tests {
         let store_name = "test_store";
         let mut store = KeyValueStore::new(store_name);
         let first_key = "one";
-        let first_pair = KeyValuePair::new(
-            first_key, "uno", 100);
+        let first_pair = KeyValuePair::new(first_key, "uno", 100);
         store.add(first_pair);
 
         // test read idempotency
         {
-            let val = store.get(first_key).expect(
-                "Expected value in store!");
-            let val_2 = store.get(first_key).expect(
-                "Expected value in store!");
+            let val = store.get(first_key).expect("Expected value in store!");
+            let val_2 = store.get(first_key).expect("Expected value in store!");
             assert_eq!(val.key(), val_2.key());
             assert_eq!(val.value(), val_2.value());
-            
+
             // try reading something that does not exist
             assert_eq!(store.get("nonexistent"), None);
             assert_eq!(store.get("nonexistent"), None);
@@ -187,30 +174,21 @@ mod tests {
 
         // test add - ensure that adding duplicates returns false
         {
-            let duplicate_add = store.add(KeyValuePair::new(
-                first_key, "uno again", 100
-            ));
-            assert_eq!(duplicate_add, false);
-            let acceptable_add = store.add(KeyValuePair::new(
-                "two", "dos", 200
-            ));
-            assert_eq!(acceptable_add, true);
+            let duplicate_add = store.add(KeyValuePair::new(first_key, "uno again", 100));
+            assert!(!duplicate_add);
+            let acceptable_add = store.add(KeyValuePair::new("two", "dos", 200));
+            assert!(acceptable_add);
         }
 
         // test update
         {
             // with a key that exists
-            store.update(KeyValuePair::new(
-                first_key, "one_again", 300
-            ));
-            let new_val = store.get(first_key).expect(
-                "Expected value in store!");
+            store.update(KeyValuePair::new(first_key, "one_again", 300));
+            let new_val = store.get(first_key).expect("Expected value in store!");
             assert_eq!(new_val.value(), "one_again");
 
             // with a key that does not exist
-            store.update(KeyValuePair::new(
-                "another_key", "another_value", 400
-            ));
+            store.update(KeyValuePair::new("another_key", "another_value", 400));
             let new_val_2 = store.get("another_key");
             assert_eq!(new_val_2, None, "Unexpected entry!");
         }
@@ -219,11 +197,11 @@ mod tests {
         {
             // on a key that exists
             let res = store.delete(first_key);
-            assert_eq!(res, true);
+            assert!(res);
 
             // on a key that does not exist
             let res_2 = store.delete("404");
-            assert_eq!(res_2, false);
+            assert!(!res_2);
         }
 
         assert_eq!(store.name(), store_name);

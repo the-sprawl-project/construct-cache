@@ -51,15 +51,12 @@ impl Debug for RWError {
 }
 
 fn error_kind_to_str(ek: ErrorKind) -> String {
-    let ret: &str;
-    match ek {
-        ErrorKind::ErrorNone => {
-            ret = "";
-        }
-        ErrorKind::FileOpenError => ret = "Cannot open file",
-        ErrorKind::FileReadError => ret = "Cannot read file",
-        ErrorKind::FileWriteError => ret = "Cannot write to file",
-        ErrorKind::DataDecodeError => ret = "Data decode error",
-    }
-    return String::from(ret);
+    let ret = match ek {
+        ErrorKind::ErrorNone => "",
+        ErrorKind::FileOpenError => "Cannot open file",
+        ErrorKind::FileReadError => "Cannot read file",
+        ErrorKind::FileWriteError => "Cannot write to file",
+        ErrorKind::DataDecodeError => "Data decode error",
+    };
+    String::from(ret)
 }
