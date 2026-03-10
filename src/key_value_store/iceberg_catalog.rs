@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use log::{info, trace, warn};
+use log::{info, trace};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -40,18 +40,12 @@ pub trait IcebergCatalog: Send + Sync {
     ///
     /// The implementation decides the file naming / path conventions.
     /// Returns the path (or identifier) of the written data file.
-    fn write_checkpoint(
-        &self,
-        store: &KeyValueStore,
-    ) -> Result<String, RWError>;
+    fn write_checkpoint(&self, store: &KeyValueStore) -> Result<String, RWError>;
 
     /// Read the latest state for a table identified by `table_name` and
     /// return a `KeyValueStore` reflecting the most-recent value for every
     /// key (last-writer-wins by timestamp).
-    fn read_latest(
-        &self,
-        table_name: &str,
-    ) -> Result<KeyValueStore, RWError>;
+    fn read_latest(&self, table_name: &str) -> Result<KeyValueStore, RWError>;
 
     /// List the table names (i.e. KV store names) known to this catalog.
     fn list_tables(&self) -> Result<Vec<String>, RWError>;
@@ -102,10 +96,7 @@ impl FileSystemCatalog {
 }
 
 impl IcebergCatalog for FileSystemCatalog {
-    fn write_checkpoint(
-        &self,
-        store: &KeyValueStore,
-    ) -> Result<String, RWError> {
+    fn write_checkpoint(&self, store: &KeyValueStore) -> Result<String, RWError> {
         let table_name = store.name();
         let data_dir = self.table_data_dir(table_name)?;
 
@@ -148,11 +139,10 @@ impl IcebergCatalog for FileSystemCatalog {
         })?;
 
         let props = WriterProperties::builder().build();
-        let mut writer =
-            ArrowWriter::try_new(file, schema, Some(props)).map_err(|e| RWError {
-                kind_: ErrorKind::FileWriteError,
-                context_: format!("Parquet writer init: {}", e),
-            })?;
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props)).map_err(|e| RWError {
+            kind_: ErrorKind::FileWriteError,
+            context_: format!("Parquet writer init: {}", e),
+        })?;
 
         writer.write(&batch).map_err(|e| RWError {
             kind_: ErrorKind::FileWriteError,
@@ -169,10 +159,7 @@ impl IcebergCatalog for FileSystemCatalog {
         Ok(path_str)
     }
 
-    fn read_latest(
-        &self,
-        table_name: &str,
-    ) -> Result<KeyValueStore, RWError> {
+    fn read_latest(&self, table_name: &str) -> Result<KeyValueStore, RWError> {
         let data_dir = self.warehouse_path.join(table_name).join("data");
         if !data_dir.exists() {
             return Err(RWError {
@@ -217,11 +204,10 @@ impl IcebergCatalog for FileSystemCatalog {
                 context_: e.to_string(),
             })?;
 
-            let builder =
-                ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| RWError {
-                    kind_: ErrorKind::DataDecodeError,
-                    context_: format!("Parquet reader init: {}", e),
-                })?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| RWError {
+                kind_: ErrorKind::DataDecodeError,
+                context_: format!("Parquet reader init: {}", e),
+            })?;
 
             let reader = builder.build().map_err(|e| RWError {
                 kind_: ErrorKind::DataDecodeError,
@@ -284,7 +270,11 @@ impl IcebergCatalog for FileSystemCatalog {
             store.add(KeyValuePair::new(&k, &v, ts));
         }
 
-        trace!("Loaded {} keys from Iceberg table '{}'", store.data().values.len(), table_name);
+        trace!(
+            "Loaded {} keys from Iceberg table '{}'",
+            store.data().values.len(),
+            table_name
+        );
         Ok(store)
     }
 
@@ -319,6 +309,7 @@ impl IcebergCatalog for FileSystemCatalog {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn test_warehouse(name: &str) -> String {
         let dir = format!("/tmp/construct_cache_test_{}", name);

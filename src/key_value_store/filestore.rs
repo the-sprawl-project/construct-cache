@@ -1,7 +1,6 @@
 use super::errors;
 use super::key_value_store::KeyValueStore;
 
-
 use std::fs::{self, File};
 use std::io::prelude::*;
 
@@ -9,14 +8,14 @@ use crate::{
     key_value_store::errors::{ErrorKind, RWError},
     proto::KeyValueStoreMsg,
 };
-use prost::Message;
-use log::trace;
-use std::sync::Arc;
-use arrow::array::{StringArray, Int64Array};
+use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use log::trace;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
+use prost::Message;
+use std::sync::Arc;
 
 pub fn write_to_file(store: KeyValueStore, target_file: &str) -> Result<(), errors::RWError> {
     let msg = store.data();
@@ -49,7 +48,10 @@ pub fn write_to_file(store: KeyValueStore, target_file: &str) -> Result<(), erro
     Ok(())
 }
 
-pub fn write_to_parquet_file(store: KeyValueStore, target_file: &str) -> Result<(), errors::RWError> {
+pub fn write_to_parquet_file(
+    store: KeyValueStore,
+    target_file: &str,
+) -> Result<(), errors::RWError> {
     let mut keys = Vec::new();
     let mut values = Vec::new();
     let mut timestamps = Vec::new();
@@ -161,7 +163,7 @@ mod tests {
     /// 2. File I/O
     /// 3. Attempt reading from invalid file, check error
     /// 4. Attempt reading bad data, check error
-    /// Remaining:
+    ///    Remaining:
     /// 5. Permissions check
     use super::*;
     use crate::key_value_store::key_value_pair::KeyValuePair;
@@ -170,7 +172,7 @@ mod tests {
         let mut kvs = KeyValueStore::new("test");
         kvs.add(KeyValuePair::new("Hello", "Value1", 100));
         kvs.add(KeyValuePair::new("Goodbye", "Value2", 200));
-        return kvs;
+        kvs
     }
 
     fn equality_test(lhs: KeyValueStore, rhs: KeyValueStore) {
@@ -179,7 +181,7 @@ mod tests {
             if let Some(val) = rhs.get(&k.clone()) {
                 assert_eq!(v, val.value(), "Mismatch for key: {:?}", k);
             } else {
-                assert!(false, "No value found for key {:?}!", k);
+                panic!("No value found for key {:?}!", k);
             }
         }
     }
@@ -203,15 +205,12 @@ mod tests {
                 panic!("Write error: {:?}!", e);
             }
         }
-        let kvs2: KeyValueStore;
-        match read_from_file(file_name) {
-            Ok(k) => {
-                kvs2 = k;
-            }
+        let kvs2 = match read_from_file(file_name) {
+            Ok(k) => k,
             Err(e) => {
                 panic!("Read error: {:?}!", e);
             }
-        }
+        };
         equality_test(kvs, kvs2);
     }
 
@@ -225,7 +224,7 @@ mod tests {
                 panic!("Write parquet error: {:?}!", e);
             }
         }
-        
+
         let metadata = std::fs::metadata(file_name).unwrap();
         assert!(metadata.len() > 0, "Parquet file should not be empty");
     }
@@ -235,7 +234,7 @@ mod tests {
         let file_name = "/dev/null";
         match read_from_file(file_name) {
             Ok(_) => {
-                assert!(false, "Expected failure!")
+                panic!("Expected failure!")
             }
             Err(e) => {
                 assert_eq!(e.kind_, ErrorKind::FileReadError);
@@ -248,7 +247,7 @@ mod tests {
         let file_name = "/tmp/file_does_not_exist";
         match read_from_file(file_name) {
             Ok(_) => {
-                assert!(false, "Expected failure!")
+                panic!("Expected failure!")
             }
             Err(e) => {
                 assert_eq!(e.kind_, ErrorKind::FileOpenError);
@@ -263,14 +262,14 @@ mod tests {
         let bytes = garbage_str.as_bytes();
         let mut file;
         match File::create(file_name) {
-        Ok(f) => {
-            file = f;
-        }
-        Err(e) => {
-            panic!("Test cannot create file! {:?}", e);
-        }
+            Ok(f) => {
+                file = f;
+            }
+            Err(e) => {
+                panic!("Test cannot create file! {:?}", e);
+            }
         };
-        match file.write_all(&bytes) {
+        match file.write_all(bytes) {
             Ok(_) => {
                 trace!("bytes: {:?}, len: {:?}", bytes, bytes.len());
             }
@@ -280,7 +279,7 @@ mod tests {
         }
         match read_from_file(file_name) {
             Ok(_) => {
-                assert!(false, "Expected failure!");
+                panic!("Expected failure!");
             }
             Err(e) => {
                 assert_eq!(e.kind_, ErrorKind::DataDecodeError);
