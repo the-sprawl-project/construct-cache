@@ -55,8 +55,12 @@ impl ConstructCacheServer {
         ping_resp.encode_to_vec()
     }
 
+    fn is_read_only(&self) -> bool {
+        self.read_only_.load(Ordering::SeqCst)
+    }
+
     fn add_value(&self, pair: KeyValuePair) -> bool {
-        if self.read_only_.load(Ordering::SeqCst) {
+        if self.is_read_only() {
             warn!("Attempted write in read-only mode");
             return false;
         }
@@ -81,7 +85,7 @@ impl ConstructCacheServer {
     }
 
     fn update_value(&self, pair: KeyValuePair) -> bool {
-        if self.read_only_.load(Ordering::SeqCst) {
+        if self.is_read_only() {
             warn!("Attempted write in read-only mode");
             return false;
         }
@@ -96,7 +100,7 @@ impl ConstructCacheServer {
     }
 
     fn delete_value(&self, key: &str) -> bool {
-        if self.read_only_.load(Ordering::SeqCst) {
+        if self.is_read_only() {
             warn!("Attempted write in read-only mode");
             return false;
         }
@@ -235,7 +239,7 @@ impl ConstructCacheServer {
     }
 
     pub fn handle_backup_request(&self, _binary_req: &[u8]) -> Vec<u8> {
-        // backup_id is ignored now, as we use epoch ms in Iceberg catalog.
+        // backup_id removed from API. Triggering manual checkpoint.
         let success = self.backup_key_value_store();
         BackupResp { success }.encode_to_vec()
     }
