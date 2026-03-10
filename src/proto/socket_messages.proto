@@ -42,7 +42,6 @@ message CreateKVPairReq {
 }
 
 message BackupReq {
-  string backup_id = 1;
 }
 
 message RestoreReq {
