@@ -1,41 +1,43 @@
 use construct_cache::socket_interface::client_impl::ConstructCacheClient;
 use construct_cache::socket_interface::socket_errors::SocketError;
-use log4rs::{config::{Appender, Root}, encode::pattern::PatternEncoder};
+use log4rs::{
+    config::{Appender, Root},
+    encode::pattern::PatternEncoder,
+};
 
-use std::io::{self, Write};
 use log::{error, info, LevelFilter};
-use std::{env, process::exit};
 use serde::Deserialize;
+use std::io::{self, Write};
+use std::{env, process::exit};
 use tokio::fs;
-use toml;
-
 
 #[derive(Deserialize)]
 struct Config {
     server_addr: ServerAddr,
-    log_info: LogInfo
+    log_info: LogInfo,
 }
 
 #[derive(Deserialize)]
 struct ServerAddr {
     ip: String,
-    port: u16
+    port: u16,
 }
 
 #[derive(Deserialize)]
 struct LogInfo {
-    log_file: String
+    log_file: String,
 }
 
 async fn parse_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     let contents = match fs::read_to_string(path).await {
         Ok(c) => c,
-        Err(e) => {return Err(Box::new(e)); }
+        Err(e) => {
+            return Err(Box::new(e));
+        }
     };
     let config: Config = toml::from_str(&contents).unwrap();
     Ok(config)
 }
-
 
 fn print_basic_help() {
     println!("\n=====How to use this=====");
@@ -53,18 +55,17 @@ fn print_basic_help() {
 fn setup_logging(path: &str) {
     let log_level = LevelFilter::Trace;
     let file = log4rs::append::file::FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} [{l}] {m}{n}")))
-        .build(&path)
+        .encoder(Box::new(PatternEncoder::new(
+            "{d(%Y-%m-%d %H:%M:%S)} [{l}] {m}{n}",
+        )))
+        .build(path)
         .expect("Failed to create log file!");
 
     let config = log4rs::config::Config::builder()
         .appender(Appender::builder().build("file", Box::new(file)))
-        .build(
-            Root::builder()
-                .appender("file")
-                .build(log_level)
-        ).unwrap();
-        log4rs::init_config(config).unwrap();
+        .build(Root::builder().appender("file").build(log_level))
+        .unwrap();
+    log4rs::init_config(config).unwrap();
 }
 
 #[tokio::main]
@@ -78,9 +79,12 @@ async fn main() -> Result<(), SocketError> {
         Ok(c) => {
             info!("Successfully read config file: {}", config_loc);
             c
-        },
+        }
         Err(e) => {
-            error!("Got error: {:?} trying to read config file {}", e, config_loc);
+            error!(
+                "Got error: {:?} trying to read config file {}",
+                e, config_loc
+            );
             exit(1);
         }
     };
@@ -90,136 +94,127 @@ async fn main() -> Result<(), SocketError> {
     setup_logging(&log_file_loc);
     let connect_addr = format!("{}:{}", addr, port);
     let mut client = ConstructCacheClient::new(&connect_addr).await?;
-    println!(
-        "KV Store client!!\n--------\nSend x to exit, h for help\n-------\n");
+    println!("KV Store client!!\n--------\nSend x to exit, h for help\n-------\n");
     while !exit_loop {
         print!("{}", prompt_prefix);
         let _ = io::stdout().flush();
         input.clear();
-        io::stdin().read_line(&mut input)
+        io::stdin()
+            .read_line(&mut input)
             .expect("Failed to read line");
         let ip = input.trim();
         if ip.is_empty() {
             continue;
         }
-        let control_char = ip.chars().nth(0).unwrap();
+        let control_char = ip.chars().next().unwrap();
         let mut skip_input = false;
         match control_char {
             'x' => {
                 exit_loop = true;
                 skip_input = true;
-            },
+            }
             'c' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let key: &str;
-                let val: &str;
-                match split.next() {
-                    None => { 
+                let key = match split.next() {
+                    None => {
                         eprintln!("Expected key!");
                         continue;
-                    },
-                    Some(x) => { key = x; }
-                }
-                match split.next() {
+                    }
+                    Some(x) => x,
+                };
+                let val = match split.next() {
                     None => {
                         eprintln!("Expected value!");
                         continue;
-                    },
-                    Some(x) => { val = x; }
-                }
+                    }
+                    Some(x) => x,
+                };
                 client.send_create(key, val).await?;
-            },
+            }
             'b' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let backup_id: &str;
-                match split.next() {
+                let backup_id = match split.next() {
                     None => {
                         eprintln!("Expected backup ID!");
                         continue;
                     }
-                    Some(x) => {backup_id = x; }
-                }
+                    Some(x) => x,
+                };
                 client.send_backup(backup_id).await?;
-            },
+            }
             'p' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let ping_msg: &str;
-                match split.next() {
+                let ping_msg = match split.next() {
                     None => {
                         eprintln!("Expected message to ping!");
                         continue;
-                    },
-                    Some(x) => { ping_msg = x; }
-                }
+                    }
+                    Some(x) => x,
+                };
                 client.send_ping(ping_msg).await?;
-            },
+            }
             'r' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let backup_id: &str;
-                match split.next() {
+                let backup_id = match split.next() {
                     None => {
                         eprintln!("Expected backup ID!");
                         continue;
                     }
-                    Some(x) => {backup_id = x; }
-                }
+                    Some(x) => x,
+                };
                 client.send_restore(backup_id).await?;
             }
             'g' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let read_key: &str;
-                match split.next() {
+                let read_key = match split.next() {
                     None => {
                         eprintln!("Expected key to read!");
                         continue;
                     }
-                    Some(x) => {read_key = x; }
-                }
+                    Some(x) => x,
+                };
                 client.send_read(read_key).await?;
-            },
+            }
             'u' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let key: &str;
-                let val: &str;
-                match split.next() {
-                    None => { 
+                let key = match split.next() {
+                    None => {
                         eprintln!("Expected key!");
                         continue;
-                    },
-                    Some(x) => { key = x; }
-                }
-                match split.next() {
+                    }
+                    Some(x) => x,
+                };
+                let val = match split.next() {
                     None => {
                         eprintln!("Expected value!");
                         continue;
-                    },
-                    Some(x) => { val = x; }
-                }
+                    }
+                    Some(x) => x,
+                };
                 client.send_update(key, val).await?;
-            },
+            }
             'd' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let key: &str;
-                match split.next() {
+                let key = match split.next() {
                     None => {
                         eprintln!("Expected key to delete!");
                         continue;
-                    },
-                    Some(x) => { key = x; }
-                }
+                    }
+                    Some(x) => x,
+                };
                 client.send_delete(key).await?;
             }
             'h' => {
                 print_basic_help();
                 skip_input = true;
-            },
+            }
             _ => {
                 eprintln!("Unexpected input: {:?}", ip);
                 skip_input = true;
@@ -228,7 +223,7 @@ async fn main() -> Result<(), SocketError> {
         if !skip_input {
             match client.receive_resp().await {
                 Ok(s) => println!("<< {}", s),
-                Err(e) => eprintln!("<! {}", e)
+                Err(e) => eprintln!("<! {}", e),
             }
         }
     }
