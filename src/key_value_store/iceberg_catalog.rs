@@ -28,6 +28,14 @@ fn cdc_schema() -> Arc<Schema> {
 // Trait
 // ---------------------------------------------------------------------------
 
+/// A single point-in-time snapshot of the KV store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    pub id: u64,
+    pub timestamp_ms: i64,
+    pub path: String,
+}
+
 /// A lightweight catalog interface for the construct-cache.
 ///
 /// Implementations manage *where* and *how* Iceberg-compatible Parquet
@@ -46,6 +54,12 @@ pub trait IcebergCatalog: Send + Sync {
     /// return a `KeyValueStore` reflecting the most-recent value for every
     /// key (last-writer-wins by timestamp).
     fn read_latest(&self, table_name: &str) -> Result<KeyValueStore, RWError>;
+
+    /// Read the state of a table as of a specific snapshot version.
+    fn read_version(&self, table_name: &str, snapshot_id: u64) -> Result<KeyValueStore, RWError>;
+
+    /// List all snapshots for a given table.
+    fn list_snapshots(&self, table_name: &str) -> Result<Vec<Snapshot>, RWError>;
 
     /// List the table names (i.e. KV store names) known to this catalog.
     fn list_tables(&self) -> Result<Vec<String>, RWError>;
@@ -92,6 +106,42 @@ impl FileSystemCatalog {
             })?;
         }
         Ok(dir)
+    }
+
+    /// Helper to list all parquet files in the data dir as Snapshots.
+    fn get_snapshots_internal(&self, table_name: &str) -> Result<Vec<Snapshot>, RWError> {
+        let data_dir = self.warehouse_path.join(table_name).join("data");
+        if !data_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut snapshots = Vec::new();
+        let entries = fs::read_dir(&data_dir).map_err(|e| RWError {
+            kind_: ErrorKind::FileReadError,
+            context_: e.to_string(),
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| RWError {
+                kind_: ErrorKind::FileReadError,
+                context_: e.to_string(),
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("parquet") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Ok(epoch_ms) = stem.parse::<u64>() {
+                        snapshots.push(Snapshot {
+                            id: epoch_ms,
+                            timestamp_ms: epoch_ms as i64,
+                            path: path.to_string_lossy().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        snapshots.sort_by_key(|s| s.id);
+        Ok(snapshots)
     }
 }
 
@@ -160,46 +210,35 @@ impl IcebergCatalog for FileSystemCatalog {
     }
 
     fn read_latest(&self, table_name: &str) -> Result<KeyValueStore, RWError> {
-        let data_dir = self.warehouse_path.join(table_name).join("data");
-        if !data_dir.exists() {
+        let snapshots = self.get_snapshots_internal(table_name)?;
+        if snapshots.is_empty() {
             return Err(RWError {
                 kind_: ErrorKind::FileReadError,
-                context_: format!("No data directory for table '{}'", table_name),
+                context_: format!("No snapshots for table '{}'", table_name),
+            });
+        }
+        let latest_id = snapshots.last().unwrap().id;
+        self.read_version(table_name, latest_id)
+    }
+
+    fn read_version(&self, table_name: &str, snapshot_id: u64) -> Result<KeyValueStore, RWError> {
+        let snapshots = self.get_snapshots_internal(table_name)?;
+        let relevant_snapshots: Vec<&Snapshot> =
+            snapshots.iter().filter(|s| s.id <= snapshot_id).collect();
+
+        if relevant_snapshots.is_empty() {
+            return Err(RWError {
+                kind_: ErrorKind::FileReadError,
+                context_: format!("No snapshots found up to version {}", snapshot_id),
             });
         }
 
-        // Collect all parquet files, sorted by name (epoch ordering).
-        let mut parquet_files: Vec<PathBuf> = fs::read_dir(&data_dir)
-            .map_err(|e| RWError {
-                kind_: ErrorKind::FileReadError,
-                context_: e.to_string(),
-            })?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("parquet") {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        parquet_files.sort();
-
-        if parquet_files.is_empty() {
-            return Err(RWError {
-                kind_: ErrorKind::FileReadError,
-                context_: format!("No parquet files for table '{}'", table_name),
-            });
-        }
-
-        // Last-writer-wins merge: iterate all files in order and keep the
+        // Last-writer-wins merge: iterate all snapshots in order and keep the
         // entry with the highest timestamp for each key.
         let mut latest: HashMap<String, (String, i64)> = HashMap::new();
 
-        for pf in &parquet_files {
-            let file = fs::File::open(pf).map_err(|e| RWError {
+        for s in relevant_snapshots {
+            let file = fs::File::open(&s.path).map_err(|e| RWError {
                 kind_: ErrorKind::FileOpenError,
                 context_: e.to_string(),
             })?;
@@ -271,11 +310,16 @@ impl IcebergCatalog for FileSystemCatalog {
         }
 
         trace!(
-            "Loaded {} keys from Iceberg table '{}'",
+            "Loaded {} keys from Iceberg table '{}' at snapshot {}",
             store.data().values.len(),
-            table_name
+            table_name,
+            snapshot_id
         );
         Ok(store)
+    }
+
+    fn list_snapshots(&self, table_name: &str) -> Result<Vec<Snapshot>, RWError> {
+        self.get_snapshots_internal(table_name)
     }
 
     fn list_tables(&self) -> Result<Vec<String>, RWError> {
@@ -383,5 +427,47 @@ mod tests {
         let catalog = FileSystemCatalog::new(&wh).unwrap();
         let err = catalog.read_latest("no_such_table").unwrap_err();
         assert_eq!(err.kind_, ErrorKind::FileReadError);
+    }
+
+    #[test]
+    fn test_list_snapshots() {
+        let wh = test_warehouse("list_snapshots");
+        let catalog = FileSystemCatalog::new(&wh).unwrap();
+        let table = "snap_table";
+        let mut store = KeyValueStore::new(table);
+
+        store.add(KeyValuePair::new("k1", "v1", 100));
+        catalog.write_checkpoint(&store).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        store.update(KeyValuePair::new("k1", "v2", 200));
+        catalog.write_checkpoint(&store).unwrap();
+
+        let snaps = catalog.list_snapshots(table).unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert!(snaps[0].id < snaps[1].id);
+    }
+
+    #[test]
+    fn test_read_version() {
+        let wh = test_warehouse("read_version");
+        let catalog = FileSystemCatalog::new(&wh).unwrap();
+        let table = "ver_table";
+        let mut store = KeyValueStore::new(table);
+
+        store.add(KeyValuePair::new("k1", "v1", 100));
+        catalog.write_checkpoint(&store).unwrap();
+        let snap1_id = catalog.list_snapshots(table).unwrap()[0].id;
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        store.update(KeyValuePair::new("k1", "v2", 200));
+        catalog.write_checkpoint(&store).unwrap();
+
+        let loaded_v1 = catalog.read_version(table, snap1_id).unwrap();
+        assert_eq!(loaded_v1.get("k1").unwrap().value(), "v1");
+
+        let loaded_latest = catalog.read_latest(table).unwrap();
+        assert_eq!(loaded_latest.get("k1").unwrap().value(), "v2");
     }
 }
