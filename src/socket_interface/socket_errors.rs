@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display, Formatter, Result};
 pub enum ErrorKind {
     ErrorNone,
     ParseError,
-    ConnectError
+    ConnectError,
 }
 
 pub struct SocketError {
@@ -49,13 +49,10 @@ impl Debug for SocketError {
 }
 
 fn error_kind_to_str(ek: ErrorKind) -> String {
-    let ret: &str;
-    match ek {
-        ErrorKind::ErrorNone => {
-            ret = "";
-        }
-        ErrorKind::ParseError => ret = "Cannot parse payload",
-        ErrorKind::ConnectError => ret = "Cannot connect to server"
-    }
-    return String::from(ret);
+    let ret = match ek {
+        ErrorKind::ErrorNone => "",
+        ErrorKind::ParseError => "Cannot parse payload",
+        ErrorKind::ConnectError => "Cannot connect to server",
+    };
+    String::from(ret)
 }
