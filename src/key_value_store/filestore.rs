@@ -8,14 +8,8 @@ use crate::{
     key_value_store::errors::{ErrorKind, RWError},
     proto::KeyValueStoreMsg,
 };
-use arrow::array::{Int64Array, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
 use log::trace;
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use prost::Message;
-use std::sync::Arc;
 
 pub fn write_to_file(store: KeyValueStore, target_file: &str) -> Result<(), errors::RWError> {
     let msg = store.data();
@@ -48,86 +42,7 @@ pub fn write_to_file(store: KeyValueStore, target_file: &str) -> Result<(), erro
     Ok(())
 }
 
-pub fn write_to_parquet_file(
-    store: KeyValueStore,
-    target_file: &str,
-) -> Result<(), errors::RWError> {
-    let mut keys = Vec::new();
-    let mut values = Vec::new();
-    let mut timestamps = Vec::new();
-
-    for (k, v) in store.data().values {
-        keys.push(k);
-        values.push(Some(v.value));
-        timestamps.push(v.timestamp);
-    }
-
-    let key_array = StringArray::from(keys);
-    let value_array = StringArray::from(values);
-    let timestamp_array = Int64Array::from(timestamps);
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Utf8, false),
-        Field::new("value", DataType::Utf8, true),
-        Field::new("timestamp", DataType::Int64, false),
-    ]));
-
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(key_array),
-            Arc::new(value_array),
-            Arc::new(timestamp_array),
-        ],
-    );
-
-    let batch = match batch {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(RWError {
-                kind_: ErrorKind::FileWriteError,
-                context_: format!("Arrow formatting error: {}", e),
-            });
-        }
-    };
-
-    let file = match File::create(target_file) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(RWError {
-                kind_: ErrorKind::FileOpenError,
-                context_: e.to_string(),
-            });
-        }
-    };
-
-    let props = WriterProperties::builder().build();
-    let mut writer = match ArrowWriter::try_new(file, schema, Some(props)) {
-        Ok(w) => w,
-        Err(e) => {
-            return Err(RWError {
-                kind_: ErrorKind::FileWriteError,
-                context_: format!("Parquet writer init error: {}", e),
-            });
-        }
-    };
-
-    if let Err(e) = writer.write(&batch) {
-        return Err(RWError {
-            kind_: ErrorKind::FileWriteError,
-            context_: format!("Parquet batch write error: {}", e),
-        });
-    }
-
-    if let Err(e) = writer.close() {
-        return Err(RWError {
-            kind_: ErrorKind::FileWriteError,
-            context_: format!("Parquet file close error: {}", e),
-        });
-    }
-
-    Ok(())
-}
+// Removed write_to_parquet_file
 
 pub fn read_from_file(src_file: &str) -> Result<KeyValueStore, errors::RWError> {
     let buf = match fs::read(src_file) {
@@ -214,20 +129,7 @@ mod tests {
         equality_test(kvs, kvs2);
     }
 
-    #[test]
-    fn test_file_io_parquet() {
-        let kvs = create_simple_kv_store();
-        let file_name = "/tmp/test.parquet";
-        match write_to_parquet_file(kvs.clone(), file_name) {
-            Ok(_) => {}
-            Err(e) => {
-                panic!("Write parquet error: {:?}!", e);
-            }
-        }
-
-        let metadata = std::fs::metadata(file_name).unwrap();
-        assert!(metadata.len() > 0, "Parquet file should not be empty");
-    }
+// Removed test_file_io_parquet
 
     #[test]
     fn test_file_io_read_empty_file() {
