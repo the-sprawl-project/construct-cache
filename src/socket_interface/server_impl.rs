@@ -1,4 +1,4 @@
-use crate::key_value_store::iceberg_catalog::{FileSystemCatalog, IcebergCatalog};
+use crate::key_value_store::rocksdb_catalog::{RocksDBCatalog, StoreCatalog};
 use crate::key_value_store::key_value_store::KeyValueStore;
 use prost::Message;
 use std::str::FromStr;
@@ -17,8 +17,9 @@ use log::{error, info, trace, warn};
 /// it may be able to selectively choose the interfaces it listens on
 pub struct ConstructCacheServer {
     listen_addr_: String,
+    controlplane_addr_: String,
     kvs_access_: RwLock<KeyValueStore>,
-    catalog_: Arc<dyn IcebergCatalog>,
+    catalog_: Arc<dyn StoreCatalog>,
     read_only_: AtomicBool,
 }
 
@@ -27,15 +28,44 @@ fn invalid_create_resp() -> CreateKvPairResp {
 }
 
 impl ConstructCacheServer {
-    pub fn new(listening_addr: &str, name: &str) -> Arc<ConstructCacheServer> {
-        // For now, we use a fixed warehouse path.
-        let catalog = Arc::new(FileSystemCatalog::new("warehouse").expect("Cannot create catalog"));
+    pub fn new(listening_addr: &str, name: &str, controlplane_addr: &str) -> Arc<ConstructCacheServer> {
+        let catalog = Arc::new(
+            RocksDBCatalog::new(&format!("file://tmp/warehouse_{}", listening_addr.replace(":", "_"))).expect("Cannot create catalog"),
+        );
         Arc::new(ConstructCacheServer {
             listen_addr_: String::from_str(listening_addr).unwrap(),
+            controlplane_addr_: String::from_str(controlplane_addr).unwrap(),
             kvs_access_: RwLock::new(KeyValueStore::new(name)),
             catalog_: catalog,
             read_only_: AtomicBool::new(false),
         })
+    }
+    
+    async fn sync_with_controlplane(&self, req_type: ReqType, pair: Option<KeyValuePair>, key: String) -> bool {
+        if self.controlplane_addr_.is_empty() {
+            return true; // No control plane to sync with
+        }
+        
+        match crate::socket_interface::client_impl::ConstructCacheClient::new(&self.controlplane_addr_).await {
+            Ok(mut client) => {
+                let mut sync_req = SyncReq::default();
+                sync_req.set_op_type(req_type);
+                if let Some(p) = pair {
+                    sync_req.pair = Some(p);
+                }
+                sync_req.key = key;
+                sync_req.sender_addr = self.listen_addr_.clone();
+                if let Ok(_) = client.send_sync_req(sync_req).await {
+                    if let Ok(resp) = client.receive_sync_resp().await {
+                        return resp.success;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Could not connect to control plane: {:?}", e);
+            }
+        }
+        false
     }
 
     pub fn handle_ping_request(&self, binary_req: &[u8]) -> Vec<u8> {
@@ -68,10 +98,6 @@ impl ConstructCacheServer {
         let success = (*store).add(kvp_proto_to_kvp_rust(pair));
         if success {
             info!("Successfully added pair!");
-            // Automatic checkpoint
-            if let Err(e) = self.catalog_.write_checkpoint(&store) {
-                error!("Failed to write checkpoint: {:?}", e);
-            }
         } else {
             info!("Did not add pair!");
         }
@@ -92,9 +118,7 @@ impl ConstructCacheServer {
         let mut store = self.kvs_access_.write().unwrap();
         let success = (*store).update(kvp_proto_to_kvp_rust(pair));
         if success {
-            if let Err(e) = self.catalog_.write_checkpoint(&store) {
-                error!("Failed to write checkpoint: {:?}", e);
-            }
+            info!("Successfully updated pair!");
         }
         success
     }
@@ -107,48 +131,44 @@ impl ConstructCacheServer {
         let mut store = self.kvs_access_.write().unwrap();
         let success = (*store).delete(key);
         if success {
-            if let Err(e) = self.catalog_.write_checkpoint(&store) {
-                error!("Failed to write checkpoint: {:?}", e);
-            }
+            info!("Successfully deleted pair!");
         }
         success
     }
 
-    fn backup_key_value_store(&self) -> bool {
+    fn commit_key_value_store(&self) -> bool {
         let store = self.kvs_access_.read().unwrap();
-        match self.catalog_.write_checkpoint(&store) {
+        match self.catalog_.write_checkpoint(store.name(), &store) {
             Ok(_) => true,
             Err(e) => {
-                error!("Inner error in backup: {:?}", e.to_string());
+                error!("Inner error in commit: {:?}", e.to_string());
                 false
             }
         }
     }
 
-    fn restore_key_value_store(&self, snapshot_id: Option<u64>) -> bool {
+    fn rollback_key_value_store(&self, snapshot_id: i64) -> bool {
         let mut store = self.kvs_access_.write().unwrap();
         let table_name = store.name().to_string();
-        let result = if let Some(id) = snapshot_id {
-            self.catalog_.read_version(&table_name, id)
-        } else {
-            self.catalog_.read_latest(&table_name)
-        };
-
-        match result {
-            Ok(new_store) => {
-                *store = new_store;
-                // If we restore, we probably want to resume writes.
-                self.read_only_.store(false, Ordering::SeqCst);
-                true
+        match self.catalog_.rollback(&table_name, snapshot_id) {
+            Ok(_) => {
+                // After rollback, we reload the state
+                if let Ok(new_store) = self.catalog_.read_latest(&table_name) {
+                    *store = new_store;
+                    self.read_only_.store(false, Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
             }
             Err(e) => {
-                error!("Inner error in restore: {:?}", e.to_string());
+                error!("Inner error in rollback: {:?}", e.to_string());
                 false
             }
         }
     }
 
-    pub fn handle_create_request(&self, binary_req: &[u8]) -> Vec<u8> {
+    pub async fn handle_create_request(&self, binary_req: &[u8]) -> Vec<u8> {
         let create_request = match parse_create_request(binary_req) {
             Ok(v) => v,
             Err(e) => {
@@ -160,12 +180,12 @@ impl ConstructCacheServer {
             warn!("No pair to insert");
             return invalid_create_resp().encode_to_vec();
         }
-        let insertable_pair = match create_request.pair {
-            None => return invalid_create_resp().encode_to_vec(),
-            Some(x) => x,
-        };
-        info!("Got key: {:?}", insertable_pair.key.as_str());
-        info!("Got value: {:?}", insertable_pair.value.as_str());
+        let insertable_pair = create_request.pair.unwrap();
+
+        let cp_success = self.sync_with_controlplane(ReqType::Create, Some(insertable_pair.clone()), String::new()).await;
+        if !cp_success {
+             return CreateKvPairResp { success: false }.encode_to_vec();
+        }
 
         let success = self.add_value(insertable_pair);
         let resp = CreateKvPairResp { success };
@@ -203,7 +223,7 @@ impl ConstructCacheServer {
         }
     }
 
-    pub fn handle_update_request(&self, binary_req: &[u8]) -> Vec<u8> {
+    pub async fn handle_update_request(&self, binary_req: &[u8]) -> Vec<u8> {
         let update_request = match parse_update_request(binary_req) {
             Ok(v) => v,
             Err(e) => {
@@ -214,6 +234,10 @@ impl ConstructCacheServer {
         let mut resp = UpdateKvPairResp::default();
         match update_request.pair {
             Some(x) => {
+                let cp_success = self.sync_with_controlplane(ReqType::Update, Some(x.clone()), String::new()).await;
+                if !cp_success {
+                     return UpdateKvPairResp { success: false }.encode_to_vec();
+                }
                 let success = self.update_value(x);
                 resp.success = success;
             }
@@ -224,10 +248,14 @@ impl ConstructCacheServer {
         resp.encode_to_vec()
     }
 
-    pub fn handle_delete_request(&self, binary_req: &[u8]) -> Vec<u8> {
+    pub async fn handle_delete_request(&self, binary_req: &[u8]) -> Vec<u8> {
         match parse_delete_request(binary_req) {
             Ok(delete_request) => {
                 let key = delete_request.key;
+                let cp_success = self.sync_with_controlplane(ReqType::Delete, None, key.clone()).await;
+                if !cp_success {
+                    return DeleteKvPairResp { success: false }.encode_to_vec();
+                }
                 let success = self.delete_value(&key);
                 DeleteKvPairResp { success }.encode_to_vec()
             }
@@ -238,22 +266,21 @@ impl ConstructCacheServer {
         }
     }
 
-    pub fn handle_backup_request(&self, _binary_req: &[u8]) -> Vec<u8> {
-        // backup_id removed from API. Triggering manual checkpoint.
-        let success = self.backup_key_value_store();
-        BackupResp { success }.encode_to_vec()
+    pub fn handle_commit_request(&self, _binary_req: &[u8]) -> Vec<u8> {
+        let success = self.commit_key_value_store();
+        CommitResp { success }.encode_to_vec()
     }
 
-    pub fn handle_restore_request(&self, binary_req: &[u8]) -> Vec<u8> {
-        let restore_request = match parse_restore_request(binary_req) {
+    pub fn handle_rollback_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let rollback_request = match parse_rollback_request(binary_req) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Parse error: {:?}", e);
-                return RestoreResp { success: false }.encode_to_vec();
+                return RollbackResp { success: false }.encode_to_vec();
             }
         };
-        let success = self.restore_key_value_store(restore_request.snapshot_id);
-        RestoreResp { success }.encode_to_vec()
+        let success = self.rollback_key_value_store(rollback_request.snapshot_id);
+        RollbackResp { success }.encode_to_vec()
     }
 
     pub fn handle_list_snapshots_request(&self, binary_req: &[u8]) -> Vec<u8> {
@@ -275,7 +302,8 @@ impl ConstructCacheServer {
                     .map(|s| SnapshotMsg {
                         id: s.id,
                         timestamp_ms: s.timestamp_ms,
-                        path: s.path,
+                        manifest_list: s.manifest_list,
+                        summary: s.summary,
                     })
                     .collect();
                 ListSnapshotsResp {
@@ -319,6 +347,29 @@ impl ConstructCacheServer {
         }
     }
 
+    pub fn handle_sync_request(&self, _binary_req: &[u8]) -> Vec<u8> {
+        // Obsolete given the new SyncReq flow but kept to avoid broken compilation
+        SyncResp { success: false }.encode_to_vec()
+    }
+    
+    pub fn handle_replicate_create_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let req = parse_create_request(binary_req).unwrap_or_default();
+        let success = if let Some(p) = req.pair { self.add_value(p) } else { false };
+        CreateKvPairResp { success }.encode_to_vec()
+    }
+    
+    pub fn handle_replicate_update_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let req = parse_update_request(binary_req).unwrap_or_default();
+        let success = if let Some(p) = req.pair { self.update_value(p) } else { false };
+        UpdateKvPairResp { success }.encode_to_vec()
+    }
+    
+    pub fn handle_replicate_delete_request(&self, binary_req: &[u8]) -> Vec<u8> {
+        let req = parse_delete_request(binary_req).unwrap_or_default();
+        let success = self.delete_value(&req.key);
+        DeleteKvPairResp { success }.encode_to_vec()
+    }
+
     // TODO: Given that Error is a trait, we should ideally create custom
     // errors that extend it and improve our error reporting system.
     pub async fn main_loop(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
@@ -348,14 +399,18 @@ impl ConstructCacheServer {
                     let payload = req.payload;
                     let resp = match req_type {
                         ReqType::Ping => self_arc.handle_ping_request(&payload),
-                        ReqType::Create => self_arc.handle_create_request(&payload),
+                        ReqType::Create => self_arc.handle_create_request(&payload).await,
                         ReqType::Read => self_arc.handle_read_request(&payload),
-                        ReqType::Update => self_arc.handle_update_request(&payload),
-                        ReqType::Delete => self_arc.handle_delete_request(&payload),
-                        ReqType::Backup => self_arc.handle_backup_request(&payload),
-                        ReqType::Restore => self_arc.handle_restore_request(&payload),
+                        ReqType::Update => self_arc.handle_update_request(&payload).await,
+                        ReqType::Delete => self_arc.handle_delete_request(&payload).await,
+                        ReqType::Commit => self_arc.handle_commit_request(&payload),
+                        ReqType::Rollback => self_arc.handle_rollback_request(&payload),
                         ReqType::ListSnapshots => self_arc.handle_list_snapshots_request(&payload),
                         ReqType::TimeTravel => self_arc.handle_time_travel_request(&payload),
+                        ReqType::Sync => self_arc.handle_sync_request(&payload),
+                        ReqType::ReplicateCreate => self_arc.handle_replicate_create_request(&payload),
+                        ReqType::ReplicateUpdate => self_arc.handle_replicate_update_request(&payload),
+                        ReqType::ReplicateDelete => self_arc.handle_replicate_delete_request(&payload),
                     };
                     let mut generic_resp = GenericResponse::default();
                     generic_resp.set_req_type(req_type);

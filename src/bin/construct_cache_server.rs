@@ -77,7 +77,7 @@ async fn main() -> io::Result<()> {
     setup_logging(&log_file);
     let listen_addr = format!("{}:{}", addr, port);
     trace!("Hello, server!");
-    let server = ConstructCacheServer::new(&listen_addr, "default");
+    let server = ConstructCacheServer::new(&listen_addr, "default", "");
     match server.main_loop().await {
         Ok(_) => {}
         Err(e) => {
