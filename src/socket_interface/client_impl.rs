@@ -99,23 +99,40 @@ impl ConstructCacheClient {
         Ok(true)
     }
 
-    pub async fn send_restore(&mut self, backup_id: &str) -> Result<bool, SocketError> {
+    pub async fn send_rollback(&mut self, snapshot_id: i64) -> Result<bool, SocketError> {
         let mut request = GenericRequest::default();
-        let restore_req = RestoreReq {
-            backup_id: backup_id.to_string(),
-            snapshot_id: None,
-        };
-        request.payload = restore_req.encode_to_vec();
-        request.set_req_type(ReqType::Restore);
+        let rollback_req = RollbackReq { snapshot_id };
+        request.payload = rollback_req.encode_to_vec();
+        request.set_req_type(ReqType::Rollback);
         self.send_message(request).await?;
         Ok(true)
     }
 
-    pub async fn send_backup(&mut self) -> Result<bool, SocketError> {
+    pub async fn send_commit(&mut self) -> Result<bool, SocketError> {
         let mut request = GenericRequest::default();
-        let backup_req = BackupReq {};
-        request.payload = backup_req.encode_to_vec();
-        request.set_req_type(ReqType::Backup);
+        let commit_req = CommitReq {};
+        request.payload = commit_req.encode_to_vec();
+        request.set_req_type(ReqType::Commit);
+        self.send_message(request).await?;
+        Ok(true)
+    }
+
+    pub async fn send_list_snapshots(&mut self, table_name: &str) -> Result<bool, SocketError> {
+        let mut request = GenericRequest::default();
+        let list_req = ListSnapshotsReq {
+            table_name: table_name.to_string(),
+        };
+        request.payload = list_req.encode_to_vec();
+        request.set_req_type(ReqType::ListSnapshots);
+        self.send_message(request).await?;
+        Ok(true)
+    }
+
+    pub async fn send_time_travel(&mut self, snapshot_id: i64) -> Result<bool, SocketError> {
+        let mut request = GenericRequest::default();
+        let tt_req = TimeTravelReq { snapshot_id };
+        request.payload = tt_req.encode_to_vec();
+        request.set_req_type(ReqType::TimeTravel);
         self.send_message(request).await?;
         Ok(true)
     }
@@ -126,6 +143,29 @@ impl ConstructCacheClient {
         } else {
             warn!("Connection closed!");
             Ok("".to_string())
+        }
+    }
+
+    pub async fn send_sync_req(&mut self, sync_req: SyncReq) -> Result<bool, SocketError> {
+        let mut request = GenericRequest::default();
+        request.payload = sync_req.encode_to_vec();
+        request.set_req_type(ReqType::Sync);
+        self.send_message(request).await?;
+        Ok(true)
+    }
+
+    pub async fn receive_sync_resp(&mut self) -> Result<SyncResp, SocketError> {
+        if let Some(Ok(bytes)) = self._framed.next().await {
+            let parsed_response = GenericResponse::decode(bytes.freeze()).map_err(|e| SocketError {
+                kind_: ErrorKind::ParseError,
+                context_: e.to_string(),
+            })?;
+            super::decode_utils::parse_sync_response(&parsed_response.payload)
+        } else {
+            Err(SocketError {
+                kind_: ErrorKind::ConnectError,
+                context_: "Connection closed".to_string(),
+            })
         }
     }
 }
