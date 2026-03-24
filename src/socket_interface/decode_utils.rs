@@ -65,8 +65,8 @@ pub fn parse_delete_request(request: &[u8]) -> Result<DeleteKvPairReq, SocketErr
     }
 }
 
-pub fn parse_restore_request(request: &[u8]) -> Result<RestoreReq, SocketError> {
-    match RestoreReq::decode(request) {
+pub fn parse_rollback_request(request: &[u8]) -> Result<RollbackReq, SocketError> {
+    match RollbackReq::decode(request) {
         Ok(res) => Ok(res),
         Err(e) => Err(SocketError {
             kind_: ErrorKind::ParseError,
@@ -87,6 +87,26 @@ pub fn parse_list_snapshots_request(request: &[u8]) -> Result<ListSnapshotsReq, 
 
 pub fn parse_time_travel_request(request: &[u8]) -> Result<TimeTravelReq, SocketError> {
     match TimeTravelReq::decode(request) {
+        Ok(res) => Ok(res),
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
+pub fn parse_sync_request(request: &[u8]) -> Result<SyncReq, SocketError> {
+    match SyncReq::decode(request) {
+        Ok(res) => Ok(res),
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
+pub fn parse_sync_response(payload: &[u8]) -> Result<SyncResp, SocketError> {
+    match SyncResp::decode(payload) {
         Ok(res) => Ok(res),
         Err(e) => Err(SocketError {
             kind_: ErrorKind::ParseError,
@@ -175,13 +195,13 @@ fn parse_delete_response(payload: &[u8]) -> Result<String, SocketError> {
     }
 }
 
-fn parse_backup_response(payload: &[u8]) -> Result<String, SocketError> {
-    match BackupResp::decode(payload) {
+fn parse_commit_response(payload: &[u8]) -> Result<String, SocketError> {
+    match CommitResp::decode(payload) {
         Ok(v) => {
             if v.success {
-                Ok("Successfully created backup!".to_string())
+                Ok("Successfully committed changes!".to_string())
             } else {
-                Ok("Could not complete backup!".to_string())
+                Ok("Could not complete commit!".to_string())
             }
         }
         Err(e) => Err(SocketError {
@@ -191,13 +211,13 @@ fn parse_backup_response(payload: &[u8]) -> Result<String, SocketError> {
     }
 }
 
-fn parse_restore_response(payload: &[u8]) -> Result<String, SocketError> {
-    match RestoreResp::decode(payload) {
+fn parse_rollback_response(payload: &[u8]) -> Result<String, SocketError> {
+    match RollbackResp::decode(payload) {
         Ok(v) => {
             if v.success {
-                Ok("Successfully restored from backup!".to_string())
+                Ok("Successfully rolled back table state!".to_string())
             } else {
-                Ok("Could not restore from backup!".to_string())
+                Ok("Could not rollback table state!".to_string())
             }
         }
         Err(e) => Err(SocketError {
@@ -236,6 +256,16 @@ fn parse_time_travel_response(payload: &[u8]) -> Result<String, SocketError> {
                 Ok("Could not travel in time!".to_string())
             }
         }
+        Err(e) => Err(SocketError {
+            kind_: ErrorKind::ParseError,
+            context_: e.to_string(),
+        }),
+    }
+}
+
+fn parse_sync_response_str(payload: &[u8]) -> Result<String, SocketError> {
+    match SyncResp::decode(payload) {
+        Ok(v) => Ok(format!("Sync success: {}", v.success)),
         Err(e) => Err(SocketError {
             kind_: ErrorKind::ParseError,
             context_: e.to_string(),
@@ -283,11 +313,11 @@ pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
             Ok(v) => returnable = v,
             Err(e) => return Err(e),
         },
-        ReqType::Backup => match parse_backup_response(&payload) {
+        ReqType::Commit => match parse_commit_response(&payload) {
             Ok(v) => returnable = v,
             Err(e) => return Err(e),
         },
-        ReqType::Restore => match parse_restore_response(&payload) {
+        ReqType::Rollback => match parse_rollback_response(&payload) {
             Ok(v) => returnable = v,
             Err(e) => return Err(e),
         },
@@ -296,6 +326,22 @@ pub fn parse_generic_response(response: &[u8]) -> Result<String, SocketError> {
             Err(e) => return Err(e),
         },
         ReqType::TimeTravel => match parse_time_travel_response(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::Sync => match parse_sync_response_str(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::ReplicateCreate => match parse_create_response(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::ReplicateUpdate => match parse_update_response(&payload) {
+            Ok(v) => returnable = v,
+            Err(e) => return Err(e),
+        },
+        ReqType::ReplicateDelete => match parse_delete_response(&payload) {
             Ok(v) => returnable = v,
             Err(e) => return Err(e),
         },
