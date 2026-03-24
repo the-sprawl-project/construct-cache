@@ -13,10 +13,14 @@ enum ReqType {
   READ = 2;
   UPDATE = 3;
   DELETE = 4;
-  BACKUP = 5;
-  RESTORE = 6;
+  COMMIT = 5;
+  ROLLBACK = 6;
   LIST_SNAPSHOTS = 7;
   TIME_TRAVEL = 8;
+  SYNC = 9;
+  REPLICATE_CREATE = 10;
+  REPLICATE_UPDATE = 11;
+  REPLICATE_DELETE = 12;
 }
 
 message GenericRequest {
@@ -41,12 +45,11 @@ message CreateKVPairReq {
   KeyValuePair pair = 1;
 }
 
-message BackupReq {
+message CommitReq {
 }
 
-message RestoreReq {
-  string backup_id = 1;
-  optional uint64 snapshot_id = 2;
+message RollbackReq {
+  int64 snapshot_id = 1;
 }
 
 message ListSnapshotsReq {
@@ -54,9 +57,10 @@ message ListSnapshotsReq {
 }
 
 message SnapshotMsg {
-  uint64 id = 1;
+  int64 id = 1;
   int64 timestamp_ms = 2;
-  string path = 3;
+  string manifest_list = 3;
+  map<string, string> summary = 4;
 }
 
 message ListSnapshotsResp {
@@ -65,7 +69,7 @@ message ListSnapshotsResp {
 }
 
 message TimeTravelReq {
-  uint64 snapshot_id = 1;
+  int64 snapshot_id = 1;
 }
 
 message TimeTravelResp {
@@ -105,10 +109,21 @@ message DeleteKVPairResp {
   bool success = 1;
 }
 
-message BackupResp {
+message CommitResp {
   bool success = 1;
 }
 
-message RestoreResp {
+message RollbackResp {
+  bool success = 1;
+}
+
+message SyncReq {
+  ReqType op_type = 1;
+  KeyValuePair pair = 2;
+  string key = 3;
+  string sender_addr = 4;
+}
+
+message SyncResp {
   bool success = 1;
 }
