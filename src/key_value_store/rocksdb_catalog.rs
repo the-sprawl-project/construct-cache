@@ -244,3 +244,77 @@ impl StoreCatalog for RocksDBCatalog {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn test_warehouse(name: &str) -> String {
+        format!("/tmp/construct_cache_rocksdb_test_{}", name)
+    }
+
+    #[test]
+    fn test_rocksdb_catalog_init() {
+        let wh = test_warehouse("init");
+        let _ = fs::remove_dir_all(&wh);
+        let catalog = RocksDBCatalog::new(&wh).unwrap();
+        assert!(catalog.warehouse_path.exists());
+    }
+
+    #[test]
+    fn test_rocksdb_catalog_read_write_checkpoint() {
+        let wh = test_warehouse("rw");
+        let _ = fs::remove_dir_all(&wh);
+        let catalog = RocksDBCatalog::new(&wh).unwrap();
+        
+        let table_name = "test_store";
+        let mut store = KeyValueStore::new(table_name);
+        
+        store.add(KeyValuePair::new("key1", "val1", 100));
+        store.add(KeyValuePair::new("key2", "val2", 200));
+        
+        let ckpt_path = catalog.write_checkpoint(table_name, &store).unwrap();
+        assert!(!ckpt_path.is_empty());
+        
+        let loaded_store = catalog.read_latest(table_name).unwrap();
+        assert_eq!(loaded_store.get("key1").unwrap().value(), "val1");
+        assert_eq!(loaded_store.get("key2").unwrap().value(), "val2");
+    }
+
+    #[test]
+    fn test_rocksdb_catalog_list_snapshots_and_time_travel() {
+        let wh = test_warehouse("tt");
+        let _ = fs::remove_dir_all(&wh);
+        let catalog = RocksDBCatalog::new(&wh).unwrap();
+        
+        let table_name = "test_tt";
+        let mut store = KeyValueStore::new(table_name);
+        
+        store.add(KeyValuePair::new("key1", "val1", 100));
+        let _ckpt_path1 = catalog.write_checkpoint(table_name, &store).unwrap();
+        
+        // Wait briefly to ensure different epoch_ns for snapshot id
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        
+        store.add(KeyValuePair::new("key2", "val2", 200));
+        let _ckpt_path2 = catalog.write_checkpoint(table_name, &store).unwrap();
+        
+        let snaps = catalog.list_snapshots(table_name).unwrap();
+        assert_eq!(snaps.len(), 2, "Should have 2 snapshots");
+
+        let mut sorted_snaps = snaps;
+        sorted_snaps.sort_by_key(|s| s.id);
+        
+        let v1_id = sorted_snaps[0].id;
+        let v2_id = sorted_snaps[1].id;
+        
+        let tt_store1 = catalog.read_version(table_name, v1_id).unwrap();
+        assert_eq!(tt_store1.get("key1").unwrap().value(), "val1");
+        assert!(tt_store1.get("key2").is_none());
+        
+        let tt_store2 = catalog.read_version(table_name, v2_id).unwrap();
+        assert_eq!(tt_store2.get("key1").unwrap().value(), "val1");
+        assert_eq!(tt_store2.get("key2").unwrap().value(), "val2");
+    }
+}
