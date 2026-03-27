@@ -12,26 +12,39 @@ and whatnot. Part of The Sprawl Project.
 $ git clone git@github.com:the-sprawl-project/construct-cache.git
 ```
 
-2. Build the project
+## Multi-Node Sync Demo (Recommended)
 
-```bash
-$ cd construct-cache
-$ make dev
-```
+The system now supports synchronous multi-node replication via a central controlplane.
 
-3. Run the server first
+1. **Start the Controlplane**: This launches the orchestrator and 3 cache instances (ports 9001-9003).
+   ```bash
+   cargo run --bin controlplane
+   ```
 
-```bash
-$ target/debug/construct_cache_server
-```
+2. **Launch Clients**: Open new terminal windows and connect to different nodes to see replication in action:
+   ```bash
+   # Terminal A
+   cargo run --bin construct_cache_client 9001
+   
+   # Terminal B
+   cargo run --bin construct_cache_client 9002
+   ```
 
-4. Run the client
+3. **Verify Sync**: Create a key on port 9001 (`c key val`) and then read it from port 9002 (`g key`).
 
-```bash
-$ target/debug/construct_cache_client
-```
+## Manual / Single Node
+If you prefer running a single isolated instance:
 
-5. Type `h` for help within the client.
+1. **Run the server**:
+   ```bash
+   cargo run --bin construct_cache_server
+   ```
+
+2. **Run the client**:
+   ```bash
+   cargo run --bin construct_cache_client
+   ```
+   (Note: Use `h` for help within the client.)
 
 ## Syncing protobufs with `sprawl-protocol`
 
