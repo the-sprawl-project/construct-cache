@@ -6,7 +6,9 @@ and whatnot. Part of The Sprawl Project.
 
 ## Try it out!
 
-1. Clone using SSH
+1. Install prerequisites: Rust toolchain (`cargo`) and `protoc` (`protobuf-compiler`, e.g., `sudo apt-get install protobuf-compiler` on Debian/Ubuntu or `brew install protobuf` on macOS).
+
+2. Clone using SSH
 
 ```bash
 $ git clone git@github.com:the-sprawl-project/construct-cache.git
