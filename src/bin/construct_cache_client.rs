@@ -68,6 +68,22 @@ fn setup_logging(path: &str) {
     log4rs::init_config(config).unwrap();
 }
 
+fn resolve_port(arg: Option<String>, default_port: u16) -> Result<u16, String> {
+    match arg {
+        Some(p) => p
+            .parse::<u16>()
+            .map_err(|_| format!("Invalid port argument: {}", p)),
+        None => Ok(default_port),
+    }
+}
+
+fn parse_snapshot_id(arg: Option<&str>) -> Result<i64, &'static str> {
+    match arg {
+        None => Err("Expected backup ID!"),
+        Some(x) => x.parse::<i64>().map_err(|_| "Backup ID must be an integer!"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), SocketError> {
     env::set_var("RUST_LOG", "trace");
@@ -89,15 +105,12 @@ async fn main() -> Result<(), SocketError> {
         }
     };
     let addr = config.server_addr.ip;
-    let port = match env::args().nth(1) {
-        Some(p) => match p.parse::<u16>() {
-            Ok(parsed) => parsed,
-            Err(_) => {
-                eprintln!("Invalid port argument: {}", p);
-                exit(1);
-            }
-        },
-        None => config.server_addr.port,
+    let port = match resolve_port(env::args().nth(1), config.server_addr.port) {
+        Ok(p) => p,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            exit(1);
+        }
     };
     let log_file_loc = config.log_info.log_file;
     setup_logging(&log_file_loc);
@@ -159,18 +172,12 @@ async fn main() -> Result<(), SocketError> {
             'r' => {
                 let mut split = ip.split(' ');
                 split.next();
-                let backup_id = match split.next() {
-                    None => {
-                        eprintln!("Expected backup ID!");
+                let backup_id = match parse_snapshot_id(split.next()) {
+                    Ok(id) => id,
+                    Err(msg) => {
+                        eprintln!("{}", msg);
                         continue;
                     }
-                    Some(x) => match x.parse::<i64>() {
-                        Ok(id) => id,
-                        Err(_) => {
-                            eprintln!("Backup ID must be an integer!");
-                            continue;
-                        }
-                    },
                 };
                 client.send_rollback(backup_id).await?;
             }
@@ -235,3 +242,70 @@ async fn main() -> Result<(), SocketError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_snapshot_id, resolve_port};
+    use construct_cache::proto::ReqType;
+    use construct_cache::socket_interface::client_impl::ConstructCacheClient;
+    use construct_cache::socket_interface::decode_utils::{
+        parse_generic_request, parse_rollback_request,
+    };
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+    #[test]
+    fn test_resolve_port_uses_default_when_missing() {
+        assert_eq!(resolve_port(None, 8080), Ok(8080));
+    }
+
+    #[test]
+    fn test_resolve_port_overrides_with_valid_cli_arg() {
+        assert_eq!(resolve_port(Some("9001".to_string()), 8080), Ok(9001));
+    }
+
+    #[test]
+    fn test_resolve_port_rejects_invalid_and_out_of_range() {
+        assert!(resolve_port(Some("abc".to_string()), 8080).is_err());
+        assert!(resolve_port(Some("70000".to_string()), 8080).is_err());
+    }
+
+    #[test]
+    fn test_parse_snapshot_id() {
+        assert_eq!(parse_snapshot_id(Some("42")), Ok(42));
+        assert_eq!(parse_snapshot_id(None), Err("Expected backup ID!"));
+        assert_eq!(
+            parse_snapshot_id(Some("not_an_int")),
+            Err("Backup ID must be an integer!")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_client_sends_commit_and_rollback_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let server_handle = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(socket, LengthDelimitedCodec::new());
+
+            let commit_bytes = framed.next().await.unwrap().unwrap();
+            let commit_req = parse_generic_request(&commit_bytes.freeze()).unwrap();
+            assert_eq!(commit_req.req_type(), ReqType::Commit);
+
+            let rollback_bytes = framed.next().await.unwrap().unwrap();
+            let rollback_gen = parse_generic_request(&rollback_bytes.freeze()).unwrap();
+            assert_eq!(rollback_gen.req_type(), ReqType::Rollback);
+            let rollback_req = parse_rollback_request(&rollback_gen.payload).unwrap();
+            assert_eq!(rollback_req.snapshot_id, 42);
+        });
+
+        let mut client = ConstructCacheClient::new(&addr).await.unwrap();
+        assert!(client.send_commit().await.unwrap());
+        assert!(client.send_rollback(42).await.unwrap());
+
+        server_handle.await.unwrap();
+    }
+}
+
