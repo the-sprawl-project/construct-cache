@@ -89,7 +89,16 @@ async fn main() -> Result<(), SocketError> {
         }
     };
     let addr = config.server_addr.ip;
-    let port = config.server_addr.port;
+    let port = match env::args().nth(1) {
+        Some(p) => match p.parse::<u16>() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                eprintln!("Invalid port argument: {}", p);
+                exit(1);
+            }
+        },
+        None => config.server_addr.port,
+    };
     let log_file_loc = config.log_info.log_file;
     setup_logging(&log_file_loc);
     let connect_addr = format!("{}:{}", addr, port);
@@ -133,7 +142,7 @@ async fn main() -> Result<(), SocketError> {
                 client.send_create(key, val).await?;
             }
             'b' => {
-                client.send_backup().await?;
+                client.send_commit().await?;
             }
             'p' => {
                 let mut split = ip.split(' ');
@@ -155,9 +164,15 @@ async fn main() -> Result<(), SocketError> {
                         eprintln!("Expected backup ID!");
                         continue;
                     }
-                    Some(x) => x,
+                    Some(x) => match x.parse::<i64>() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            eprintln!("Backup ID must be an integer!");
+                            continue;
+                        }
+                    },
                 };
-                client.send_restore(backup_id).await?;
+                client.send_rollback(backup_id).await?;
             }
             'g' => {
                 let mut split = ip.split(' ');
